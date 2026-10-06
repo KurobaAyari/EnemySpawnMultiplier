@@ -218,6 +218,12 @@ local dst = mod3.status()
 assert(dst.dynamic_candidates >= #data,
     'dynamic scanner found fewer records than the synthetic table: ' .. tostring(dst.dynamic_candidates))
 assert(dst.applied + dst.already >= #data, 'dynamic scanner did not settle every record')
+local completed_sweeps = dst.dynamic_sweeps
+run(8)
+local quiet = mod3.status()
+assert(quiet.dynamic_sweeps == completed_sweeps,
+    'dynamic scanner restarted a full sweep without a table rebuild')
+pass('completed dynamic scan stays quiet and does not wrap continuously')
 for _, row in ipairs(data) do
     local p = table_base + row[1] + SHIFT
     assert(approx(get_f32(p + 8), 5.0), 'dynamic min_delay not applied')

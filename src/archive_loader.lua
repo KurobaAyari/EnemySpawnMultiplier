@@ -1,5 +1,5 @@
 return function(create_api, patch, build, create_panel, create_model, create_bindings, create_anchors,
-                create_store, create_diag, create_corpse)
+                create_store, create_diag, create_corpse, create_config, create_options)
     if _G.EnemySpawnMultiplier then return end
     local state = {revision = build.revision, active = false, status = '', detail = '', elapsed = 1.0}
     _G.EnemySpawnMultiplier = state
@@ -183,18 +183,21 @@ return function(create_api, patch, build, create_panel, create_model, create_bin
     local function report(status, active, dt, perf_suffix)
         state.active = active
         local detail = type(patch.detail) == 'string' and patch.detail or ''
-        if perf_suffix and perf_suffix ~= '' then
-            detail = (detail ~= '' and (detail .. ' ' .. perf_suffix) or perf_suffix)
-        end
-        local changed = state.status ~= status or state.detail ~= detail
-        state.elapsed = state.elapsed + ((type(dt) == 'number' and dt == dt and dt > 0) and dt or 0)
-        if not changed and state.elapsed < 1.0 then return end
+        local changed = state.status ~= status
+        if not changed then return end
         state.elapsed = 0
         state.status, state.detail = status, detail
-        if changed then
-            print('[EnemySpawnMultiplier] ' .. build.revision .. ': ' .. status .. (detail ~= '' and (' ' .. detail) or ''))
+        print('[EnemySpawnMultiplier] ' .. build.revision .. ': ' .. status .. (detail ~= '' and (' ' .. detail) or ''))
+        -- Performance samples are diagnostic data, not state identity. Including
+        -- the changing `upd_ms/win_ms` suffix in `state.detail` made every 0.1 s
+        -- update look like a state transition and opened/appended/closed the log
+        -- file ten times per second. Keep the state stable and attach the latest
+        -- sample only to the already-throttled log write.
+        local logged_detail = detail
+        if perf_suffix and perf_suffix ~= '' then
+            logged_detail = (logged_detail ~= '' and (logged_detail .. ' ' .. perf_suffix) or perf_suffix)
         end
-        pcall(log_line, status, detail)
+        pcall(log_line, status, logged_detail)
     end
     -- Build identity is informational, not a gate.
     --
@@ -270,11 +273,30 @@ return function(create_api, patch, build, create_panel, create_model, create_bin
         end
     end
 
+    -- Shared configuration is independent of the Win32 window: MODS and saved
+    -- settings still work if the optional F8 panel cannot be created.
+    local store, config, mods_menu = nil, nil, nil
+    if create_store then
+        local built, instance = pcall(create_store)
+        if built and instance then store = instance end
+    end
+    if create_config and create_model then
+        local built, instance = pcall(create_config, create_model, patch, {store=store, log=log_line})
+        if built and instance then config = instance; state.config = config
+        else log_line('config_unavailable', tostring(instance)) end
+    end
+    if create_options and config then
+        local built, instance = pcall(create_options, config, {log=log_line})
+        if built and instance then mods_menu = instance; state.mods_menu = mods_menu
+        else log_line('mods_menu_unavailable', tostring(instance)) end
+    end
+
     -- The configuration panel is optional and created only after the game build
     -- validated above. A panel failure is logged and then ignored: the gameplay
     -- patch must keep running even if no window can be created.
     local panel = nil
     if create_panel then
+        local panel_version = tostring(build.revision):match('v[%d%.]+') or 'v22'
         -- The bindings bridge is optional and independent of the panel: if the
         -- Mod Bindings Menu addon is absent the provider simply never becomes
         -- ready and the panel keeps its built-in F8 default.
@@ -288,17 +310,10 @@ return function(create_api, patch, build, create_panel, create_model, create_bin
             })
             if built and instance then bindings = instance end
         end
-        -- The config store is optional too: when it is missing the panel simply
-        -- runs without persistence, which is what the smaller test harnesses do.
-        local store = nil
-        if create_store then
-            local built, instance = pcall(create_store)
-            if built and instance then store = instance end
-        end
         local created, instance, reason = pcall(create_panel, create_model, patch, {
-            log = log_line, state = state, bindings = bindings, store = store,
+            log = log_line, state = state, bindings = bindings, store = store, config = config,
             export_diag = export_pack,
-            title = 'EnemySpawnMultiplier v21 by Natsun',
+            title = 'EnemySpawnMultiplier ' .. panel_version .. ' by Natsun',
         })
         if created and instance then
             panel = instance
@@ -421,6 +436,14 @@ return function(create_api, patch, build, create_panel, create_model, create_bin
         report(reason, active == true, dt, perf)
     end
     local function forward(dt, ...)
+        if mods_menu then
+            local pumped, reason = pcall(mods_menu.pump, dt)
+            if not pumped then
+                mods_menu.status, mods_menu.reason = 'unavailable', tostring(reason)
+                log_line('mods_menu_disabled', tostring(reason))
+                mods_menu = nil
+            end
+        end
         check(dt)
         if corpse and not privacy_gated then
             local stepped, reason = pcall(corpse.update, dt)

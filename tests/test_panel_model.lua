@@ -25,7 +25,8 @@ pass('panel defaults to 2x budget, 1x patrol count, fast cooldowns and heavy')
 
 -- Five sliders, one checkbox and three radios, in the documented order.
 local widgets = model.layout()
-assert(#widgets.sliders == 5 and #widgets.checkboxes == 1 and #widgets.radios == 3 and #widgets.buttons == 3)
+assert(#widgets.sliders == 5 and #widgets.checkboxes == 1 and #widgets.radios == 3 and #widgets.buttons == 4)
+assert(widgets.buttons[4].id == 'language')
 assert(widgets.checkboxes[1].key == 'fast_corpse' and #widgets.checkboxes[1].label > 0)
 assert(widgets.sliders[1].key == 'budget')
 assert(widgets.sliders[2].key == 'patrol_count')
@@ -210,6 +211,14 @@ assert(model.pending.preset == 'heavy')
 assert(approx(model.pending.patrol_cd, 2.0))
 assert(model.pending.fast_corpse == true)
 pass('panel reset restores the documented defaults')
+
+assert(model.set_language('en'))
+assert(model.layout().sliders[1].label == 'Wave budget')
+model.reset()
+assert(model.language == 'en' and model.pending.language == 'en')
+assert(model.pending.budget == 2.0)
+assert(model.set_language('zh'))
+pass('language switching updates labels and Reset preserves the selected language')
 
 -- Risk thresholds drive the red value text and the corner warning. The boundary
 -- is strict "greater than", so exactly 1.0 / 1.0 is still safe.

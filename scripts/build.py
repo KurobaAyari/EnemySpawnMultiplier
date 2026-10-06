@@ -20,22 +20,22 @@ RESOURCE = 'mods/cowboybingus/enemy_spawn_multiplier'
 IMPLEMENTATION_RESOURCE = RESOURCE + '_impl'
 VARIANTS = {
     'base': {
-        'revision': 'data-v21-native',
-        'public_version': 'v21',
+        'revision': 'data-v22-native',
+        'public_version': 'v22',
         'name': 'Enemy Spawn Multiplier 6x Native Composition',
         'description': 'Uses the native encounter budget override path at 6x, scales nonzero per-type caps and the group clamp to 10x, shortens Patrol/Straggler intervals to one tenth, and reduces Illuminate static-guard budget to preserve reinforcement capacity. Native template weights, population gates and executable code remain unchanged. Requires the official Bingus Shared Loader v15 or newer.',
         'template_bias': False,
     },
     'light-medium': {
-        'revision': 'data-v21-light-medium',
-        'public_version': 'v21',
+        'revision': 'data-v22-light-medium',
+        'public_version': 'v22',
         'name': 'Enemy Spawn Multiplier 6x Light-Medium Bias',
         'description': 'Uses the data-only spawn multipliers and favors Encounter templates with lower cost per unit. Unsupported faction template layouts fall back to native weights instead of stopping the core tuning. Illuminate static-guard budget is reduced to preserve reinforcement capacity. Requires the official Bingus Shared Loader v15 or newer.',
         'template_bias': True,
     },
     'fast-cadence': {
-        'revision': 'data-v21-fast-cadence',
-        'public_version': 'v21',
+        'revision': 'data-v22-fast-cadence',
+        'public_version': 'v22',
         'name': 'Enemy Spawn Multiplier Fast Cadence',
         'description': 'Behaviour-focused spawn retuning. Enemy reinforcement arrives on a much shorter cooldown, and both reinforcement waves and their point budget are steered toward heavier units, while patrols spawn more frequently, in greater numbers and in larger groups. The per-wave reinforcement point budget is reduced, so a wave is composed of fewer but heavier units rather than being larger overall. Changes writable private data only, verifies the supported game build before writing, keeps every changed value restorable from a stored baseline so repeated updates cannot stack, and never modifies executable code or calls native spawn functions. Requires the official Bingus Shared Loader v15 or newer.',
         'template_bias': True,
@@ -69,8 +69,8 @@ VARIANTS = {
         },
     },
     'panel': {
-        'revision': 'data-v21-panel-blackbox',
-        'public_version': 'v21-blackbox',
+        'revision': 'data-v22-panel-blackbox',
+        'public_version': 'v22-blackbox',
         'name': 'Enemy Spawn Multiplier Panel Blackbox',
         'panel': True,
         'description': 'Panel build with a light always-on blackbox for crash triage. Press F8 for the configuration overlay; use Export game log to dump the live log/cfg onto the Desktop. Starts from 2x budget, 1x patrol count, 1x patrol size adjustable from 0.1x to 2x, both cooldowns at the fast end (2 s) and the heavy-focus preset. Skips spawn writes (and fast corpse decay) while matchmaking privacy is Public, latched for the rest of that mission. Fast corpse decay defaults on at ~5 s while preserving ragdoll. Patrol count/size warn above 1.0x. Logs updater cost and resource-clone events. Changes writable private data only. Requires the official Bingus Shared Loader v15 or newer.',
@@ -105,8 +105,8 @@ VARIANTS = {
         },
     },
     'preview-patrol-2x-3x': {
-        'revision': 'data-v21-preview-patrol-2x-3x',
-        'public_version': 'v21-preview',
+        'revision': 'data-v22-preview-patrol-2x-3x',
+        'public_version': 'v22-preview',
         'name': 'Enemy Spawn Multiplier Preview Patrol 2x-3x',
         'description': 'Local preview build for lower-end machines. Same reinforcement profile as Fast Cadence, but the patrol pair is rebalanced so far fewer entities are live at once: a smaller patrol count curve and smaller per-wave squad curve keep clear of the shared component gate that a crash-prone machine runs into. Changes writable private data only, verifies the supported game build before writing, keeps every changed value restorable from a stored baseline so repeated updates cannot stack, and never modifies executable code or calls native spawn functions. Requires the official Bingus Shared Loader v15 or newer.',
         'template_bias': True,
@@ -141,6 +141,24 @@ VARIANTS = {
     },
 }
 
+# Local field-test package. Keep it separate from the published v22 panel so a
+# local performance run can be installed and rolled back without ambiguity.
+VARIANTS['panel-local'] = dict(
+    VARIANTS['panel'],
+    revision='data-v22.5-panel-local',
+    public_version='v22.5',
+    version=22.5,
+    name='Enemy Spawn Multiplier Panel Local Test',
+)
+VARIANTS['panel-menus'] = dict(
+    VARIANTS['panel'],
+    revision='data-v23-panel-menus', public_version='v23', version=23,
+    name='Enemy Spawn Multiplier Panel',
+    description=(VARIANTS['panel']['description'] +
+                 ' F8 and the optional MODS menu share applied settings and a saved Chinese/English language choice.'
+                 ' Optional: Mod Options Menu v1.1+ with Bingus Shared Loader v18+ for translated native settings.'),
+)
+
 
 def run(args, **kwargs):
     result = subprocess.run([str(a) for a in args], capture_output=True, text=True, **kwargs)
@@ -167,11 +185,11 @@ def inspect_archive(data):
 
 def main():
     if len(sys.argv) == 1:
-        key = 'panel'
+        key = 'panel-menus'
     else:
         key = sys.argv[1]
-    if key != 'panel':
-        raise SystemExit('Only the panel variant is maintained; use: build.py panel')
+    if key not in ('panel', 'panel-local', 'panel-menus'):
+        raise SystemExit('Use: build.py panel-menus (v23), panel, or panel-local')
     variant = VARIANTS[key]
     revision = variant['revision']
     settings = {
@@ -214,7 +232,7 @@ def main():
                              with_panel=variant.get('panel', False))
     env = dict(os.environ, LUA_PATH=str(LUA.parent / '?.lua') + ';;')
     tests = run([LUA, TESTS / 'test_data.lua', SOURCE, build, sha(LUA.read_bytes())], env=env)
-    if key in ('fast-cadence', 'preview-patrol-2x-3x', 'panel'):
+    if key in ('fast-cadence', 'preview-patrol-2x-3x', 'panel', 'panel-local', 'panel-menus'):
         tests += '\n' + run([LUA, TESTS / 'test_fast_cadence.lua', SOURCE, build, sha(LUA.read_bytes()),
                              settings['modifier_patrol_count'], settings['modifier_travelers_max_unit']], env=env)
     tests += '\n' + run([LUA, TESTS / 'test_panel_model.lua', SOURCE, build], env=env)
@@ -223,6 +241,11 @@ def main():
     if os.name == 'nt':
         tests += '\n' + run([LUA, TESTS / 'test_windows_api.lua', SOURCE], env=env)
     tests += '\n' + run([LUA, TESTS / 'test_config_store.lua', SOURCE, build], env=env)
+    if variant.get('panel', False):
+        tests += '\n' + run([LUA, TESTS / 'test_mod_options.lua', SOURCE, build], env=env)
+        upstream = Path(os.environ.get('HD2_MOD_OPTIONS_SOURCE', ROOT.parent / 'research/ModOptionsMenu'))
+        if (upstream / 'src/mod_options_menu.lua').is_file():
+            tests += '\n' + run([LUA, TESTS / 'test_mod_options_upstream.lua', SOURCE, build, upstream], env=env)
     tests += '\n' + run([LUA, TESTS / 'test_diag_export.lua', SOURCE], env=env)
     if variant.get('panel', False) and os.name == 'nt':
         tests += '\n' + run([LUA, TESTS / 'test_panel_config.lua', SOURCE, build], env=env)
@@ -251,7 +274,7 @@ def main():
              for suffix in ('', '.stream', '.gpu_resources')}
     report = {
         'name': variant['name'], 'slug': 'EnemySpawnMultiplier',
-        'version': 21,
+        'version': variant.get('version', 22),
         'public_version': variant['public_version'],
         'guid': '7d2c8e41-5b6a-4f19-9e3d-1a84c0b572fe', 'revision': revision,
         'description': variant['description'],
@@ -336,6 +359,9 @@ def main():
                          'decayer': {'component': 'CorpseDecayerComponent',
                                      'radius': 300.0, 'scan_interval_seconds': 0.5}},
         'configuration_panel': bool(variant.get('panel', False)),
+        'shared_configuration': {'f8': True, 'mods_menu_optional': True,
+                                 'languages': ['zh', 'en'], 'canonical_store': 'EnemySpawnMultiplier.cfg',
+                                 'mods_apply_batched': True, 'runtime_dependency': False},
         'loader_integration': {
             'minimum_loader_version': 15, 'api': 1,
             'discovery_entry': RESOURCE, 'implementation_resource': IMPLEMENTATION_RESOURCE,
@@ -350,7 +376,10 @@ def main():
         report['optional_requires'] = [{'name': 'Mod Bindings Menu',
                                         'guid': 'e40fc537-c2a2-493b-ad0f-2255c6a0174e',
                                         'api': 1,
-                                        'purpose': 'custom toggle key; F8 is used when absent'}]
+                                        'purpose': 'custom toggle key; F8 is used when absent'},
+                                       {'name': 'Mod Options Menu', 'api': 1,
+                                        'minimum_version': '1.1', 'bingus_minimum_version': 18,
+                                        'purpose': 'native MODS settings and translated texts; F8 works without it'}]
     sources = list(SOURCE.glob('*.lua')) + list(TESTS.glob('*.lua')) + list((ROOT / 'scripts').glob('*.py'))
     report['source_sha256'] = {path.relative_to(ROOT).as_posix(): sha(path.read_bytes()) for path in sources}
     release = package_release(ROOT, build, report)

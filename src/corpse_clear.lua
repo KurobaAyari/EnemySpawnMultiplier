@@ -30,8 +30,23 @@ return function(api, data, decayer_data)
     local QUERIES_PER_PASS = 512
     local READS_PER_PASS = 64
     local PASS_INTERVAL = 0.5
-    local DYNAMIC_CHUNK = 4 * 1024 * 1024
+    -- Keep each cross-process read bounded. The old 4 MiB chunk was large
+    -- enough to monopolise a frame on a busy heap, and the completed sweep was
+    -- immediately repeated forever. A 256 KiB chunk makes the work interruptible
+    -- at the update cadence; the scan is now one-shot until a recheck detects a
+    -- rebuilt table.
+    local DYNAMIC_CHUNK = 256 * 1024
     local DYNAMIC_OVERLAP = 24
+    local DYNAMIC_RECHECK_SECONDS = 5.0
+    local MAX_EMPTY_SCAN_ROUNDS = 3
+
+    local function cpu_now()
+        if type(os) == 'table' and type(os.clock) == 'function' then
+            local ok, value = pcall(os.clock)
+            if ok and type(value) == 'number' then return value end
+        end
+        return 0
+    end
 
     local MODE_REGULAR = 1
     -- Ragdoll-preserving profile: ~5 s before sink, not near-instant 0.1 s.
@@ -67,8 +82,12 @@ return function(api, data, decayer_data)
         found = false, enabled = true, seed_dead = false,
         applied = 0, already = 0, skipped = 0, mismatched = 0,
         dynamic_cursor = 0, dynamic_done = false, dynamic_wait = 0,
+        scan_rounds = 0, gave_up = false,
         dynamic_candidates = 0, dynamic_applied = 0, dynamic_already = 0,
         dynamic_skipped = 0, dynamic_errors = 0, dynamic_seen = {},
+        dynamic_sweeps = 0,
+        dynamic_bytes = nil, dynamic_amount = 0, dynamic_chunk_base = 0,
+        dynamic_mode_pos = nil, dynamic_decay_pattern = 1, dynamic_decay_pos = 1,
         total_applied = 0, total_already = 0, total_written = 0,
         mapped_headers = 0, readonly_headers = 0, base_protection = 0,
         header_probes = {},
@@ -112,6 +131,10 @@ return function(api, data, decayer_data)
         state.dynamic_already, state.dynamic_skipped, state.dynamic_errors = 0, 0, 0
         state.total_applied, state.total_already, state.total_written = 0, 0, 0
         state.dynamic_seen = {}
+        state.dynamic_wait = 0
+        state.dynamic_bytes, state.dynamic_amount = nil, 0
+        state.dynamic_mode_pos, state.dynamic_decay_pattern = nil, 1
+        state.dynamic_decay_pos = 1
     end
 
     -- Locate the generated-entity table. This is only the table header; the
@@ -157,6 +180,9 @@ return function(api, data, decayer_data)
                         state.decayer_applied, state.decayer_already, state.decayer_skipped = 0, 0, 0
                         state.decayer_seen = {}
                         state.dynamic_seen = {}
+                        state.dynamic_bytes, state.dynamic_amount = nil, 0
+                        state.dynamic_mode_pos, state.dynamic_decay_pattern = nil, 1
+                        state.dynamic_decay_pos = 1
                         state.skip_reasons = {}
                         state.reason = string.format('entities_located_private_prot=%#x', prot)
                         return true
@@ -187,6 +213,13 @@ return function(api, data, decayer_data)
             state.cursor = advance
         end
         if state.cursor >= HIGH_LIMIT then
+            state.scan_rounds = state.scan_rounds + 1
+            if state.scan_rounds >= MAX_EMPTY_SCAN_ROUNDS then
+                state.gave_up = true
+                state.mode = 'gave_up'
+                state.reason = 'entities_scan_gave_up'
+                return false
+            end
             reset_scan()
             if state.readonly_headers > 0 and state.mapped_headers > 0 then
                 state.reason = string.format(
@@ -272,6 +305,30 @@ return function(api, data, decayer_data)
             return 'already'
         end
         return 'applied'
+    end
+
+    local function recheck_dynamic()
+        if not state.base or not state.base_number or state.region_size <= 0 then
+            return false
+        end
+        local header = api.read(state.base_number, #TABLE_HEADER)
+        if not header or header:sub(1, #TABLE_HEADER) ~= TABLE_HEADER then
+            return false
+        end
+        local checked = 0
+        for absolute in pairs(state.dynamic_seen) do
+            local bytes = api.read(state.base_number + absolute, RECORD_BYTES)
+            if not bytes or not record_is_regular(bytes, 0) then
+                return false
+            end
+            local result = write_record(state.base + absolute, f32(bytes, 8), f32(bytes, 12))
+            if result ~= 'already' and result ~= 'applied' then
+                return false
+            end
+            checked = checked + 1
+            if checked >= 8 then break end
+        end
+        return checked > 0
     end
 
     local function apply_record(row)
@@ -438,47 +495,98 @@ return function(api, data, decayer_data)
             state.reason = 'dynamic_no_region'
             return
         end
+        if state.dynamic_done then
+            state.reason = string.format('dynamic_complete applied=%d already=%d candidates=%d',
+                                         state.total_applied, state.total_already,
+                                         state.dynamic_candidates)
+            return
+        end
         if state.dynamic_cursor >= state.region_size then
-            -- Do not stop after the first sweep: the table can be rebuilt, and a
-            -- row can be allocated later. Restart immediately from the top.
-            state.dynamic_cursor, state.dynamic_done, state.dynamic_wait = 0, false, 0
-            state.dynamic_seen = {}
-            state.reason = string.format('dynamic_wrap total_applied=%d total_already=%d candidates=%d',
+            state.dynamic_done = true
+            state.dynamic_wait = 0
+            state.dynamic_sweeps = state.dynamic_sweeps + 1
+            state.reason = string.format('dynamic_complete applied=%d already=%d candidates=%d',
                                          state.total_applied, state.total_already,
                                          state.dynamic_candidates)
             return
         end
 
-        -- A new sweep must see every record again; otherwise rows that were
-        -- rewritten by the game after the previous pass would be skipped.
-        if state.dynamic_cursor == 0 then state.dynamic_seen = {} end
-        local amount = math.min(DYNAMIC_CHUNK, state.region_size - state.dynamic_cursor)
-        local read_size = math.min(amount + DYNAMIC_OVERLAP, state.region_size - state.dynamic_cursor)
-        local bytes = api.read(state.base_number + state.dynamic_cursor, read_size)
-        if not bytes then
-            state.reason = 'dynamic_unreadable'
-            state.dynamic_cursor = state.dynamic_cursor + amount
-            return
+        if not state.dynamic_bytes then
+            -- A new sweep must see every record again; otherwise rows that were
+            -- rewritten by the game after the previous pass would be skipped.
+            if state.dynamic_cursor == 0 then state.dynamic_seen = {} end
+            local amount = math.min(DYNAMIC_CHUNK, state.region_size - state.dynamic_cursor)
+            local read_size = math.min(amount + DYNAMIC_OVERLAP,
+                                       state.region_size - state.dynamic_cursor)
+            local bytes = api.read(state.base_number + state.dynamic_cursor, read_size)
+            if not bytes then
+                state.reason = 'dynamic_unreadable'
+                state.dynamic_cursor = state.dynamic_cursor + amount
+                return
+            end
+            state.dynamic_bytes = bytes
+            state.dynamic_amount = amount
+            state.dynamic_chunk_base = state.dynamic_cursor
+            state.dynamic_mode_pos = 1
+            state.dynamic_decay_pattern = 1
+            state.dynamic_decay_pos = 1
         end
 
-        local pos = 1
-        while true do
-            local hit = bytes:find(MODE_SIGNATURE, pos, true)
-            if not hit then break end
+        local bytes = state.dynamic_bytes
+        local deadline = cpu_now() + 0.002
+        while state.dynamic_mode_pos do
+            local hit = bytes:find(MODE_SIGNATURE, state.dynamic_mode_pos, true)
+            if not hit then
+                state.dynamic_mode_pos = nil
+                break
+            end
             local offset = hit - 1
             if record_is_regular(bytes, offset) then
-                local absolute = state.dynamic_cursor + offset
+                local absolute = state.dynamic_chunk_base + offset
                 local live_min, live_max = f32(bytes, offset + 8), f32(bytes, offset + 12)
                 apply_dynamic(absolute, live_min, live_max)
             end
-            pos = hit + 1
+            state.dynamic_mode_pos = hit + 1
+            if cpu_now() >= deadline then
+                state.reason = 'dynamic_scan'
+                return
+            end
         end
-        apply_decayer_dynamic(bytes, state.dynamic_cursor)
-        state.dynamic_cursor = state.dynamic_cursor + amount
-        state.reason = string.format('dynamic_scan %#x/%#x applied=%d already=%d skipped=%d',
-                                     state.dynamic_cursor, state.region_size,
-                                     state.dynamic_applied, state.dynamic_already,
-                                     state.dynamic_skipped)
+
+        while state.dynamic_decay_pattern <= #DECAYER_PATTERNS do
+            local pattern = DECAYER_PATTERNS[state.dynamic_decay_pattern]
+            local hit = bytes:find(pattern, state.dynamic_decay_pos, true)
+            if hit then
+                local offset = hit - 1
+                local absolute = state.dynamic_chunk_base + offset
+                if not state.decayer_seen[absolute] then
+                    state.decayer_seen[absolute] = true
+                    local live_radius = f32(bytes, offset)
+                    if live_radius then
+                        note_decayer(write_decayer(absolute, live_radius), absolute, live_radius)
+                    end
+                end
+                state.dynamic_decay_pos = hit + 1
+            else
+                state.dynamic_decay_pattern = state.dynamic_decay_pattern + 1
+                state.dynamic_decay_pos = 1
+            end
+            if cpu_now() >= deadline then
+                state.reason = 'dynamic_scan'
+                return
+            end
+        end
+
+        state.dynamic_cursor = state.dynamic_cursor + state.dynamic_amount
+        state.dynamic_bytes, state.dynamic_amount = nil, 0
+        state.dynamic_mode_pos, state.dynamic_decay_pattern = nil, 1
+        state.dynamic_decay_pos = 1
+        if state.dynamic_cursor >= state.region_size then
+            state.dynamic_done = true
+            state.dynamic_wait = 0
+            state.dynamic_sweeps = state.dynamic_sweeps + 1
+        end
+        state.reason = 'dynamic_scan'
     end
 
     local function apply_pass()
@@ -505,7 +613,24 @@ return function(api, data, decayer_data)
                 return
             end
         end
-        dynamic_pass()
+        if state.dynamic_done then
+            state.dynamic_wait = state.dynamic_wait + PASS_INTERVAL
+            if state.dynamic_wait >= DYNAMIC_RECHECK_SECONDS then
+                state.dynamic_wait = 0
+                if not recheck_dynamic() then
+                    -- A table rebuild invalidates the old addresses. Only then
+                    -- pay for another bounded full sweep.
+                    state.dynamic_cursor, state.dynamic_done = 0, false
+                    state.dynamic_seen = {}
+                    state.dynamic_candidates, state.dynamic_applied = 0, 0
+                    state.dynamic_already, state.dynamic_skipped = 0, 0
+                    state.total_applied, state.total_already, state.total_written = 0, 0, 0
+                    state.reason = 'dynamic_rebuild_detected'
+                end
+            end
+        else
+            dynamic_pass()
+        end
         -- Expose lifetime totals once the dynamic path is active. A single sweep
         -- can wrap before the next status read, so per-sweep counters alone would
         -- report applied=0 even while rows are being written every pass.
@@ -515,7 +640,7 @@ return function(api, data, decayer_data)
     end
 
     function M.update(dt)
-        if not state.enabled then return state.reason end
+        if not state.enabled or state.gave_up then return state.reason end
         state.accumulator = state.accumulator + ((type(dt) == 'number' and dt == dt and dt > 0) and dt or 0)
         if state.accumulator < PASS_INTERVAL then return state.reason end
         state.accumulator = 0
@@ -561,6 +686,11 @@ return function(api, data, decayer_data)
         if wanted == state.enabled then return end
         state.enabled = wanted
         if wanted then
+            if state.gave_up then
+                state.gave_up = false
+                state.scan_rounds = 0
+                reset_scan()
+            end
             state.reason = 'enabled'
         else
             M.restore()
@@ -575,6 +705,7 @@ return function(api, data, decayer_data)
             passes = state.passes, reason = state.reason,
             dynamic_cursor = state.dynamic_cursor, dynamic_size = state.region_size,
             dynamic_candidates = state.dynamic_candidates,
+            dynamic_sweeps = state.dynamic_sweeps,
             mapped_headers = state.mapped_headers,
             readonly_headers = state.readonly_headers,
             base_protection = state.base_protection,

@@ -107,4 +107,37 @@ assert(state.panel ~= nil)
 pass('panel remains available on the ship so changes can be staged')
 
 state.panel.close()
+
+-- Shared settings and MODS must survive a failed optional Win32 window.
+local create_config = assert(loadfile(source .. '/config_service.lua'))()
+local create_options = assert(loadfile(source .. '/mod_options.lua'))()
+local prefix = 'natsun.enemy_spawn_multiplier.'
+local specs, values, callbacks = {}, {}, {}
+local menu = {api=1,version=3,
+    register_option=function(id,spec) specs[id]=spec; values[id]=spec.default; return true end,
+    get=function(id) return values[id] end,
+    set=function(id,value) values[id]=value; return true end,
+    on_change=function(id,fn) callbacks[id]=fn; return true end}
+env.EnemySpawnMultiplier=nil
+local saved={budget=3,patrol_count=1,patrol_size=0.8,encounter_cd=15,
+    patrol_cd=20,preset='native',fast_corpse=false,language='en'}
+local saves=0
+loader(factory,patch,identity,function() error('simulated panel failure') end,
+    create_model,nil,nil,function() return {
+        load=function() return saved end,
+        save=function(profile) saved=profile; saves=saves+1; return true end}
+    end,nil,nil,create_config,function(config,options)
+        options.get_menu=function() return menu end
+        return create_options(config,options)
+    end)
+local independent=assert(env.EnemySpawnMultiplier)
+assert(independent.panel==nil and independent.config and independent.mods_menu)
+assert(patch.budget_multiplier==3 and patch.fast_corpse==false)
+env.update(0.1)
+assert(independent.mods_menu.status=='ready' and values[prefix..'budget']==3)
+values[prefix..'budget']=4.7; callbacks[prefix..'budget'](4.7)
+values[prefix..'language']=1; callbacks[prefix..'language'](1)
+env.update(0.1)
+assert(patch.budget_multiplier==4.7 and saved.language=='zh' and saves==1)
+pass('loader restores cfg and applies MODS changes even when the F8 window fails')
 print(count .. ' panel loader-integration checks passed; no game process involved.')

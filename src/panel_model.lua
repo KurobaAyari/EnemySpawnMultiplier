@@ -5,8 +5,65 @@
 -- the window, painting and input and only reads through this model.
 return function()
     local M = {}
+    M.language = 'zh'
+    local TEXT = {
+        zh = {
+            budget='增援预算', patrol_count='巡逻数量', patrol_size='巡逻规模',
+            encounter_cd='增援 CD', patrol_cd='巡逻 CD',
+            fast_corpse='尸体快速消失（保留布娃娃）',
+            heavy='偏向重甲（重甲更多）', light_medium='偏向轻中甲（轻中甲更多）',
+            native='原版（不改模板权重）', presets='模板预设',
+            apply='应用', reset='重置', export='导出游戏日志', language_button='English',
+            language='语言 / Language', chinese='中文', english='English',
+            applied='已应用', failed='失败：', export_unavailable='导出不可用',
+            export_failed='导出失败', exported='已导出到桌面',
+            waiting='尚未进入任务：配置已保存，进图后生效', active='已生效',
+            privacy='【民主提示】当前匹配隐私为公开，ESM 多倍刷怪不生效',
+            pressure='【民主预警】当前配置压力较大，游戏崩溃风险高',
+            fast='快', slow='慢', toggle='F8 开关', custom_key='自定义键',
+            budget_desc='每次增援的预算倍率，不是直接的敌人数量倍率。',
+            patrol_count_desc='巡逻数量倍率；超过 1.0x 会增加压力和崩溃风险。',
+            patrol_size_desc='巡逻规模倍率；超过 1.0x 会增加压力和崩溃风险。',
+            encounter_cd_desc='目标增援间隔（秒）；30 秒使用原版节奏。',
+            patrol_cd_desc='目标巡逻间隔（秒），通过倍率曲线近似；30 秒使用原版节奏。',
+            fast_corpse_desc='加快尸体消失并保留布娃娃；关闭时恢复原值。',
+            preset_desc='调整增援模板权重：重甲、轻中甲或原版。',
+            language_desc='切换 ESM 的中英文。F8 面板即时刷新；MODS 文案在重新打开暂停菜单后刷新。',
+        },
+        en = {
+            budget='Wave budget', patrol_count='Patrol count', patrol_size='Patrol size',
+            encounter_cd='Reinf. CD', patrol_cd='Patrol CD',
+            fast_corpse='Fast corpse decay (keep ragdolls)',
+            heavy='Heavy units (more heavy enemies)', light_medium='Light / medium units',
+            native='Vanilla (original template weights)', presets='Composition preset',
+            apply='Apply', reset='Reset', export='Export game logs', language_button='中文',
+            language='Language / 语言', chinese='中文', english='English',
+            applied='Applied', failed='Failed: ', export_unavailable='Export unavailable',
+            export_failed='Export failed', exported='Exported to Desktop',
+            waiting='Saved; takes effect when a mission starts', active='Active',
+            privacy='Public matchmaking: ESM spawn multipliers are inactive',
+            pressure='High spawn pressure: increased risk of game crashes',
+            fast='Fast', slow='Slow', toggle='F8 toggle', custom_key='Custom key',
+            budget_desc='Budget per reinforcement wave, not a direct enemy-count multiplier.',
+            patrol_count_desc='Patrol count multiplier. Above 1.0x increases load and crash risk.',
+            patrol_size_desc='Patrol size multiplier. Above 1.0x increases load and crash risk.',
+            encounter_cd_desc='Target reinforcement interval in seconds. 30 uses vanilla pacing.',
+            patrol_cd_desc='Approximate patrol interval in seconds, mapped to a rate curve. 30 uses vanilla pacing.',
+            fast_corpse_desc='Speed up corpse decay while keeping ragdolls; disabling restores original values.',
+            preset_desc='Reinforcement template weights: heavy, light / medium, or vanilla.',
+            language_desc='ESM language. F8 updates immediately; reopen the escape menu to refresh MODS text.',
+        },
+    }
+    function M.text(key, language)
+        return (TEXT[language or M.language] or TEXT.zh)[key] or key
+    end
+    function M.set_language(language)
+        if language ~= 'zh' and language ~= 'en' then return false end
+        M.language, M.pending.language = language, language
+        return true
+    end
 
-    -- Width fits the full 'EnemySpawnMultiplier v21 by Natsun' title plus the
+    -- Width fits the full 'EnemySpawnMultiplier v22 by Natsun' title plus the
     -- toggle hint on the same row.
     M.CLIENT_W, M.CLIENT_H = 580, 500
     M.SLIDER_MIN, M.SLIDER_MAX = 0.1, 6.0
@@ -27,30 +84,31 @@ return function()
     local DEFAULTS = {
         budget = 2.0, patrol_count = 1.0, patrol_size = 1.0,
         encounter_cd = M.COOLDOWN_FAST, patrol_cd = M.COOLDOWN_FAST, preset = 'heavy',
-        fast_corpse = true,
+        fast_corpse = true, language = 'zh',
     }
 
     local SLIDER_LABELS = {
-        {key = 'budget', label = '增援预算'},
-        {key = 'patrol_count', label = '巡逻数量'},
-        {key = 'patrol_size', label = '巡逻规模', min = M.PATROL_SIZE_MIN, max = M.PATROL_SIZE_MAX, steps = M.PATROL_SIZE_STEPS},
-        {key = 'encounter_cd', label = '增援 CD', kind = 'cooldown'},
-        {key = 'patrol_cd', label = '巡逻 CD', kind = 'cooldown'},
+        {key = 'budget'},
+        {key = 'patrol_count'},
+        {key = 'patrol_size', min = M.PATROL_SIZE_MIN, max = M.PATROL_SIZE_MAX, steps = M.PATROL_SIZE_STEPS},
+        {key = 'encounter_cd', kind = 'cooldown'},
+        {key = 'patrol_cd', kind = 'cooldown'},
     }
     -- Simple on/off rows rendered as checkboxes, below the sliders.
     local CHECKBOX_LABELS = {
-        {key = 'fast_corpse', label = '尸体快速消失（保留布娃娃）'},
+        {key = 'fast_corpse'},
     }
 
     local RADIO_LABELS = {
-        {value = 'heavy', label = '偏向重甲（重甲更多）'},
-        {value = 'light_medium', label = '偏向轻中甲（轻中甲更多）'},
-        {value = 'native', label = '原版（不改模板权重）'},
+        {value = 'heavy'},
+        {value = 'light_medium'},
+        {value = 'native'},
     }
 
     function M.reset()
-        M.pending, M.committed = {}, nil
+        M.pending = {}
         for key, value in pairs(DEFAULTS) do M.pending[key] = value end
+        M.pending.language = M.language
     end
     M.reset()
 
@@ -59,7 +117,7 @@ return function()
         local sliders = {}
         for index, def in ipairs(SLIDER_LABELS) do
             sliders[index] = {
-                key = def.key, label = def.label, kind = def.kind or 'multiplier',
+                key = def.key, label = M.text(def.key), kind = def.kind or 'multiplier',
                 min = def.min, max = def.max, steps = def.steps,
                 x = 24, y = 52 + (index - 1) * 42, w = M.CLIENT_W - 48, h = 34,
             }
@@ -73,7 +131,7 @@ return function()
         local last_slider = sliders[#sliders]
         local checkboxes = {}
         for index, def in ipairs(CHECKBOX_LABELS) do
-            checkboxes[index] = {key = def.key, label = def.label,
+            checkboxes[index] = {key = def.key, label = M.text(def.key),
                                  x = 28, y = last_slider.y + last_slider.h + 8 + (index - 1) * 28,
                                  w = M.CLIENT_W - 56, h = 24}
         end
@@ -82,7 +140,7 @@ return function()
         local presets_y = M.PRESET_HEADER_Y + 24
         local radios = {}
         for index, def in ipairs(RADIO_LABELS) do
-            radios[index] = {key = 'preset', value = def.value, label = def.label,
+            radios[index] = {key = 'preset', value = def.value, label = M.text(def.value),
                              x = 28, y = presets_y + (index - 1) * 28,
                              w = M.CLIENT_W - 56, h = 24}
         end
@@ -90,9 +148,10 @@ return function()
         local buttons_y = last_radio.y + last_radio.h + 16
         M.BUTTONS_Y = buttons_y
         local buttons = {
-            {id = 'apply', label = '应用', x = 72, y = buttons_y, w = 92, h = 32, accent = true},
-            {id = 'reset', label = '重置', x = 180, y = buttons_y, w = 92, h = 32},
-            {id = 'export', label = '导出游戏日志', x = 288, y = buttons_y, w = 148, h = 32},
+            {id = 'apply', label = M.text('apply'), x = 24, y = buttons_y, w = 92, h = 32, accent = true},
+            {id = 'reset', label = M.text('reset'), x = 128, y = buttons_y, w = 92, h = 32},
+            {id = 'export', label = M.text('export'), x = 232, y = buttons_y, w = 168, h = 32},
+            {id = 'language', label = M.text('language_button'), x = 412, y = buttons_y, w = 144, h = 32},
         }
         return {sliders = sliders, checkboxes = checkboxes, radios = radios, buttons = buttons}
     end
@@ -241,6 +300,10 @@ return function()
             return M.cooldown_to_value(steps)
         end
         local changed = false
+        if settings.language == 'zh' or settings.language == 'en' then
+            M.set_language(settings.language)
+            changed = true
+        end
         local snaps = {
             budget = snap_multiplier, patrol_count = snap_multiplier,
             patrol_size = function(value)
@@ -271,6 +334,7 @@ return function()
     function M.apply(patch)
         local ok, reason = patch.configure(M.settings(patch))
         if not ok then return false, reason end
+        M.set_language(M.pending.language or M.language)
         M.committed = {}
         for key, value in pairs(M.pending) do M.committed[key] = value end
         return true

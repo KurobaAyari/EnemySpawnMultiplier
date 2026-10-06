@@ -24,6 +24,7 @@ return function(create_model, patch, callbacks)
     -- on Apply and restored on the next game launch; when absent (as in the
     -- smaller test harnesses) the panel behaves exactly as before.
     local store = callbacks.store
+    local config = callbacks.config
     -- Optional diagnostic pack exporter (Desktop dump). Best-effort only.
     local export_diag = callbacks.export_diag
     local TITLE = callbacks.title or 'EnemySpawnMultiplier'
@@ -265,12 +266,6 @@ return function(create_model, patch, callbacks)
     local C_OK       = rgb(0x6E, 0xC7, 0x7A)
     local C_WARN     = rgb(0xE0, 0xB4, 0x5A)
     local C_DANGER   = rgb(0xE5, 0x5B, 0x5B)
-    local FOOTER_WAITING = '尚未进入建立：修改已保存，进图后生效'
-    local FOOTER_ACTIVE  = '已生效'
-    local FOOTER_PRIVACY = '【民主提示】检测到当前匹配隐私为公开，ESM多倍刷怪不生效！'
-    local CD_FAST_LABEL  = '快'
-    local CD_SLOW_LABEL  = '慢'
-    local PRESSURE_WARNING = '【民主预警】当前配置压力较大，游戏崩溃风险高'
 
     local CLIENT_W, CLIENT_H = model.CLIENT_W, model.CLIENT_H
 
@@ -292,7 +287,7 @@ return function(create_model, patch, callbacks)
     local runtime = callbacks.state
     local panel = {open = false, dragging_window = false, drag_slider = nil,
                    status = '', status_until = 0, model = model,
-                   toggle_hint = 'F8 开关'}
+                   toggle_hint = model.text('toggle')}
 
     -- Every log call goes through here and always supplies both arguments: the
     -- loader's writer concatenates the detail, so a one-argument call raises.
@@ -318,7 +313,7 @@ return function(create_model, patch, callbacks)
     -- full disk must not tear the panel down. The committed editor state is what
     -- gets written, because that is the profile the patch is actually running.
     local function save_settings()
-        if not store then return end
+        if config or not store then return end
         local called, ok, reason = pcall(store.save, model.pending)
         if not called then
             emit('config_save_error', tostring(ok))
@@ -331,6 +326,7 @@ return function(create_model, patch, callbacks)
     -- startup (before the first updater pass), so a saved configuration is live
     -- without the player having to open the panel or touch a slider.
     local function restore_settings()
+        if config then model.import(config.current()); return end
         if not store then return end
         local called, saved, reason = pcall(store.load)
         if not called then
@@ -359,22 +355,44 @@ return function(create_model, patch, callbacks)
         end
     end
     restore_settings()
+    model.committed = {}
+    for key, value in pairs(model.pending) do model.committed[key] = value end
+    local unsubscribe
+    if config then
+        unsubscribe = config.subscribe(function(profile, changed)
+            -- A submitted field wins; unrelated F8 drafts remain staged.
+            for key in pairs(changed) do model.pending[key] = profile[key] end
+            model.committed = profile
+            if changed.language then
+                model.set_language(profile.language)
+                panel.status = ''
+            end
+            if panel.drag_slider and changed[panel.drag_slider.key] then panel.drag_slider = nil end
+            if panel.window ~= nil then user32.InvalidateRect(panel.window, nil, 0) end
+        end)
+    end
 
     function panel.apply()
         -- Applying must never raise: this runs from the window procedure, and an
         -- error there would escape into the updater hook.
-        local called, ok, reason = pcall(model.apply, patch)
+        local called, ok, reason
+        if config then
+            called, ok, reason = pcall(config.commit, model.pending, 'panel')
+            if called and ok then model.committed = config.current() end
+        else
+            called, ok, reason = pcall(model.apply, patch)
+        end
         if not called then
-            panel.status, panel.status_until = '失败：' .. tostring(ok), os.clock() + 3.0
+            panel.status, panel.status_until = model.text('failed') .. tostring(ok), os.clock() + 3.0
             emit('panel_apply_error', tostring(ok))
             return false
         end
         if not ok then
-            panel.status, panel.status_until = '失败：' .. tostring(reason), os.clock() + 3.0
+            panel.status, panel.status_until = model.text('failed') .. tostring(reason), os.clock() + 3.0
             emit('panel_apply_rejected', tostring(reason))
             return false
         end
-        panel.status, panel.status_until = '已应用', os.clock() + 1.5
+        panel.status, panel.status_until = model.text('applied'), os.clock() + 1.5
         local p = model.pending
         emit('panel_applied', string.format(
             'budget=%.1f count=%.1f enc_cd=%.0fs patrol_cd=%.0fs preset=%s',
@@ -384,23 +402,44 @@ return function(create_model, patch, callbacks)
         return true
     end
 
+    function panel.set_language(language)
+        local called, accepted, reason = true, true, nil
+        if config then
+            called, accepted, reason = pcall(config.commit, {language=language}, 'panel-language')
+        else
+            accepted = model.set_language(language)
+            if accepted then
+                model.committed.language = language
+                if store then pcall(store.save, model.committed) end
+            end
+        end
+        if not called or not accepted then
+            emit('panel_language_rejected', tostring(called and reason or accepted))
+            return false
+        end
+        model.set_language(language)
+        panel.status = ''
+        if panel.window ~= nil then user32.InvalidateRect(panel.window, nil, 0) end
+        return true
+    end
+
     function panel.export()
         if type(export_diag) ~= 'function' then
-            panel.status, panel.status_until = '导出不可用', os.clock() + 3.0
+            panel.status, panel.status_until = model.text('export_unavailable'), os.clock() + 3.0
             emit('bb_export_unavailable', '')
             return false
         end
         local called, folder, err = pcall(export_diag)
         if not called then
-            panel.status, panel.status_until = '导出失败', os.clock() + 3.0
+            panel.status, panel.status_until = model.text('export_failed'), os.clock() + 3.0
             emit('bb_export_error', tostring(folder))
             return false
         end
         if not folder then
-            panel.status, panel.status_until = '导出失败：' .. tostring(err), os.clock() + 3.0
+            panel.status, panel.status_until = model.text('export_failed') .. ': ' .. tostring(err), os.clock() + 3.0
             return false
         end
-        panel.status, panel.status_until = '已导出到桌面', os.clock() + 3.0
+        panel.status, panel.status_until = model.text('exported'), os.clock() + 3.0
         return true
     end
 
@@ -459,6 +498,7 @@ return function(create_model, patch, callbacks)
         fill(memory, 0, 0, width, height, C_BG)
         fill(memory, 0, 0, width, 40, C_BAR)
         draw_text(memory, TITLE, 16, 0, width - 140, 40, C_TITLE)
+        panel.toggle_hint = model.text(panel.custom_binding and 'custom_key' or 'toggle')
         draw_text(memory, panel.toggle_hint, width - 124, 0, 108, 40, C_DIM)
 
         local widgets = model.layout()
@@ -476,8 +516,8 @@ return function(create_model, patch, callbacks)
             gdi32.DeleteObject(knob)
             if item.kind == 'cooldown' then
                 -- Ends only: the numeric seconds live on the track itself.
-                draw_text(memory, CD_FAST_LABEL, track_x - 34, item.y, 28, item.h, C_DIM, true)
-                draw_text(memory, CD_SLOW_LABEL, track_x + track_w + 6, item.y, 28, item.h, C_DIM, true)
+                draw_text(memory, model.text('fast'), track_x - 42, item.y, 32, item.h, C_DIM, true)
+                draw_text(memory, model.text('slow'), track_x + track_w + 6, item.y, 40, item.h, C_DIM, true)
             else
                 -- The value turns red while this row is over its risk threshold, so
                 -- the cause of the corner warning is visible at a glance.
@@ -500,7 +540,7 @@ return function(create_model, patch, callbacks)
                       checked and C_TITLE or C_LABEL)
         end
 
-        draw_text(memory, '模板预设', 24, model.PRESET_HEADER_Y, 200, 20, C_DIM)
+        draw_text(memory, model.text('presets'), 24, model.PRESET_HEADER_Y, 200, 20, C_DIM)
         for _, item in ipairs(widgets.radios) do
             local selected = model.pending[item.key] == item.value
             local cx, cy = item.x + 8, item.y + item.h / 2
@@ -529,11 +569,11 @@ return function(create_model, patch, callbacks)
         -- configuration will do, so "did it apply?" is never ambiguous.
         local footer, footer_color = nil, C_OK
         if runtime and runtime.status == 'privacy_gate_public' then
-            footer, footer_color = FOOTER_PRIVACY, C_DANGER
+            footer, footer_color = model.text('privacy'), C_DANGER
         elseif runtime and runtime.active == false then
-            footer, footer_color = FOOTER_WAITING, C_WARN
+            footer, footer_color = model.text('waiting'), C_WARN
         else
-            footer, footer_color = FOOTER_ACTIVE, C_OK
+            footer, footer_color = model.text('active'), C_OK
         end
         if panel.status ~= '' and os.clock() < panel.status_until then
             footer, footer_color = panel.status, C_OK
@@ -544,6 +584,7 @@ return function(create_model, patch, callbacks)
         -- appears as soon as a slider crosses the threshold and clears when the
         -- player moves it back; Apply is not required.
         if model.pressure_warning() then
+            local PRESSURE_WARNING = model.text('pressure')
             draw_text(memory, PRESSURE_WARNING, 24, CLIENT_H - 24, CLIENT_W - 48, 22, C_DANGER, true)
         end
 
@@ -574,6 +615,8 @@ return function(create_model, patch, callbacks)
                 model.reset()
             elseif item.id == 'export' then
                 panel.export()
+            elseif item.id == 'language' then
+                panel.set_language(model.language == 'zh' and 'en' or 'zh')
             end
             user32.InvalidateRect(panel.window, nil, 0)
         elseif kind == 'title' then
@@ -670,6 +713,7 @@ return function(create_model, patch, callbacks)
         if panel.window == nil then error('panel_create_window_failed') end
     end)
     if not ok then
+        if unsubscribe then unsubscribe(); unsubscribe = nil end
         log('panel_unavailable', tostring(err))
         return nil, tostring(err)
     end
@@ -677,7 +721,6 @@ return function(create_model, patch, callbacks)
     -- ------------------------------------------------------------------- pump
     local previous_key = false
     local binding_logged = false
-    local fallback_hint = panel.toggle_hint
 
     function panel.pump()
         if panel.window == nil then return end
@@ -692,6 +735,7 @@ return function(create_model, patch, callbacks)
                 key = down
                 if not binding_logged then
                     binding_logged = true
+                    panel.custom_binding = true
                     emit('panel_binding_active', 'using the Mod Bindings Menu slot')
                 end
             end
@@ -699,7 +743,7 @@ return function(create_model, patch, callbacks)
         if key == nil then
             key = bit.band(user32.GetAsyncKeyState(VK_F8), 0x8000) ~= 0
         end
-        panel.toggle_hint = binding_logged and '自定义键' or fallback_hint
+        panel.toggle_hint = model.text(binding_logged and 'custom_key' or 'toggle')
 
         if key and not previous_key then
             panel.open = not panel.open
@@ -724,6 +768,7 @@ return function(create_model, patch, callbacks)
     end
 
     function panel.close()
+        if unsubscribe then unsubscribe(); unsubscribe = nil end
         if panel.window then user32.DestroyWindow(panel.window) end
         panel.window = nil
     end
