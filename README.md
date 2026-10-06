@@ -40,4 +40,4 @@ Install the official [Bingus Shared Loader v15 or newer](https://github.com/Cowb
 
 The Panel build saves the committed profile and language to `%LOCALAPPDATA%/EnemySpawnMultiplier.cfg` and restores them automatically on the next launch. This file takes priority over stale menu saves; the menu's saved values are imported only when there is no usable ESM profile.
 
-[Technical walkthrough](docs/TECHNICAL.md) | [Build instructions](CONTRIBUTING.md) | [Installation](INSTALL.txt)
+[Technical walkthrough](docs/TECHNICAL.md) | [Build instructions](CONTRIBUTING.md) | [Installation](INSTALL.txt) | [MIT License](LICENSE)
