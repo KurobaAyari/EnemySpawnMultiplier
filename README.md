@@ -10,8 +10,6 @@ v23 按 F8 打开配置面板，可调整增援预算、巡逻数量、巡逻规
 
 F8 面板右下角的 English / 中文按钮即时切换语言；MODS 菜单也有“语言 / Language”选项。语言设置两边同步并保存。F8 文案即时刷新；MODS 文案按照菜单的公开接口，在关闭并重新打开暂停菜单后刷新。切换语言不会应用 F8 中尚未提交的刷怪参数，也不会重置参数。旧版 Mod Options Menu v1.0 仍可同步参数，但其菜单文案固定为英文。
 
-面板默认开启“尸体快速消失”（保留布娃娃）：每 0.5 秒检查一次实体数据，先尝试固定锚点，失效时自动按 `DecaySettings` 与 `CorpseDecayerComponent` 的完整字段签名扫描：仅将 `DeathDecayMode_Regular` 的 `min_delay`/`max_delay` 改为约 5 秒、衰减速度字段改为 10，并将尸体衰减检测半径由 1/3 放大到 300；关闭开关时恢复原值。本机匹配隐私为「公开」时，刷怪倍率不写入（清尸仍可运行）。
-
 模组会把诊断信息追加写入 `%LOCALAPPDATA%/EnemySpawnMultiplier.log`。面板内的“导出游戏日志”按钮可以把日志、配置和运行状态导出到桌面诊断包。
 
 ### 安装
@@ -20,6 +18,7 @@ F8 面板右下角的 English / 中文按钮即时切换语言；MODS 菜单也�
 2. 安装并启用官方 [Bingus Shared Loader v15 或更新版本](https://github.com/CowboyBingus/BingusSharedLoader/releases)，并设置为最高优先级。
 3. 从 releases 页面安装唯一的 Panel 模组包。
 4. 重新启动游戏。
+5. 若安装了牛仔哥的`ModBindingsMenu` MOD，则还需要在 游戏设置-按键绑定-MODS 中为`Toggle Menu`设置一个按键
 
 ### 配置保存
 
